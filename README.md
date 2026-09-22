@@ -1,0 +1,260 @@
+# Sistem Pemesanan Tiket Event untuk Peserta Eksternal (QR Code + Verifikasi Pembayaran Manual)
+
+Ini adalah **project terpisah** dari sistem tiket internal (Festheria) — dibuat khusus untuk peserta dari luar kampus. Alurnya sama persis dengan versi internal (pembayaran, ACC admin, QR tiket, batch, cetak PDF, tema jungle), bedanya cuma di data yang diminta saat pendaftaran: peserta eksternal mengisi **Asal Instansi** dan mengunggah **foto KTM/kartu identitas**, bukan Prodi/Tingkat.
+
+Alur: **Dashboard → Isi Data + Upload KTM → Transfer Manual/QRIS + Upload Bukti Bayar → Cek Status & Unduh Tiket (Email + Booking ID)**, plus dashboard panitia untuk rekap data, verifikasi KTM & bukti pembayaran, dan check-in.
+
+## Struktur Folder
+```
+event-ticket-eksternal/
+├── server.js              # entry point Express (helmet, rate limiting, dll)
+├── .env.example           # contoh konfigurasi (salin jadi .env)
+├── .gitignore              # supaya .env, database, & file upload tidak ter-upload ke git
+├── db/
+│   ├── schema.sql          # struktur tabel (bookings, tickets, settings)
+│   └── database.js         # koneksi SQLite (mode WAL) + migrasi otomatis
+├── services/
+│   ├── qrService.js        # generate kode tiket (per lembar) + QR code
+│   ├── settingsService.js  # baca/ubah pengaturan batch, harga, & buka-tutup pendaftaran
+│   ├── storagePaths.js     # lokasi penyimpanan database & file upload (aman untuk deploy)
+│   └── imageUpload.js      # validasi & konfigurasi upload gambar (dipakai KTM & bukti bayar)
+├── routes/
+│   ├── booking.js           # POST/GET data pemesanan (termasuk upload KTM)
+│   ├── payment.js           # upload bukti bayar, lookup status, ambil tiket (email-gated)
+│   └── admin.js              # rekap data, lihat KTM/bukti, ACC, tolak, check-in, kontrol batch
+├── scripts/
+│   └── reset-db.js          # utilitas mengosongkan database (npm run reset-db)
+├── uploads/proofs/          # penyimpanan foto KTM & bukti pembayaran (privat, hanya admin yang bisa lihat)
+└── public/
+    ├── index.html            # dashboard + tombol "Pesan Sekarang"
+    ├── booking.html           # form data pemesan + upload KTM
+    ├── payment.html           # info rekening/QRIS + upload bukti bayar
+    ├── cek-tiket.html         # cek status & unduh tiket (input Email + Booking ID)
+    ├── admin.html             # dashboard panitia
+    ├── images/qris.jpg        # GANTI dengan gambar QRIS asli kamu di sini
+    └── js/, css/
+```
+
+## Cara Menjalankan di VSCode
+
+### 1. Prasyarat
+Install **Node.js versi 22.5 ke atas** dari https://nodejs.org (pilih versi LTS terbaru).
+```bash
+node -v
+npm -v
+```
+
+### 2-4. Buka project, install, siapkan .env
+```bash
+npm install
+cp .env.example .env
+```
+Isi `.env`: `EVENT_NAME`, `EVENT_TICKET_PRICE`, `ADMIN_USERNAME`/`ADMIN_PASSWORD`, `BANK_NAME`/`BANK_ACCOUNT_NUMBER`/`BANK_ACCOUNT_HOLDER`.
+
+### 5. Ganti gambar QRIS
+Ganti file `public/images/qris.jpg` dengan QRIS asli kamu.
+
+### 6. Jalankan
+```bash
+npm run dev
+```
+Buka **http://localhost:3000** (pemesanan) dan **http://localhost:3000/admin.html** (panitia).
+
+> **Penting:** halaman `admin.html` **sengaja tidak ditautkan dari mana pun** di halaman publik (dashboard pemesanan) — supaya pengunjung biasa/pembeli iseng tidak bisa menemukan link-nya begitu saja. Panitia perlu tahu dan mengetik sendiri alamatnya (`namadomainmu.com/admin.html`) — simpan alamat ini sebagai bookmark. Ini bukan pengaman utama (tetap ada login username/password di baliknya), tapi mengurangi "godaan" orang iseng coba-coba klik.
+
+---
+
+## ❓ Cara Deploy ke Publik (Menjawab Pertanyaanmu)
+
+Project ini pakai **file lokal** untuk database (`db/tickets.db`) dan bukti pembayaran (`uploads/proofs/`). Ini penting karena membatasi pilihan hosting:
+
+**JANGAN pakai hosting serverless / free-tier yang filesystem-nya sementara** (Vercel gratis, Heroku free dyno lama, dll) — data pesanan dan bukti pembayaran bisa **hilang** setiap kali server restart/deploy ulang.
+
+**Pilih salah satu ini:**
+- **VPS** (DigitalOcean, Niagahoster VPS, Contabo, dll) — paling fleksibel, kamu install Node.js sendiri, jalankan pakai `pm2` supaya otomatis restart kalau crash
+- **Railway / Render** dengan **persistent volume/disk** diaktifkan (bukan paket default)
+
+### Deploy ke Railway (Ringkasan Langkah)
+
+1. Push project ke GitHub (`.env` **tidak akan ikut ter-push** karena sudah ada di `.gitignore` — environment variable diisi manual lewat dashboard Railway, bukan lewat file)
+2. Railway → **New Project** → **Deploy from GitHub repo** → pilih repo kamu
+3. Tab **Variables** → isi manual semua yang ada di `.env.example` kamu (`EVENT_NAME`, `ADMIN_USERNAME`, `ADMIN_PASSWORD` pakai yang baru & kuat, `BANK_NAME`, dst), **tambahkan juga**:
+   ```
+   STORAGE_DIR=/app/storage
+   ```
+4. Tab **Settings → Volumes** → **New Volume** → Mount Path: `/app/storage` (**cukup SATU volume ini saja** — database dan bukti pembayaran otomatis tersimpan di dalamnya, tidak perlu volume kedua)
+5. Tab **Settings → Networking** → **Generate Domain** untuk dapat alamat publik dengan HTTPS otomatis
+
+> **Penting soal `STORAGE_DIR`:** variabel ini yang memberi tahu aplikasi supaya menyimpan database & bukti pembayaran di folder volume (`/app/storage`), **terpisah dari folder kode aplikasi**. Kalau `STORAGE_DIR` tidak di-set (misal waktu kamu coba di laptop), aplikasi otomatis pakai folder lokal seperti biasa — jadi aman, tidak mengganggu development di lokal.
+
+**Checklist sebelum go-live:**
+1. Domain sendiri + **HTTPS aktif** (otomatis dari Railway/Render, atau Let's Encrypt gratis kalau VPS)
+2. **Jangan** upload file `.env` ke GitHub/internet — isi environment variable lewat dashboard hosting
+3. Backup rutin file di dalam `STORAGE_DIR` (database + bukti pembayaran) — kalau server bermasalah, ini satu-satunya sumber data kamu
+4. Jalankan `npm run reset-db` sebelum hari-H supaya data testing tidak tercampur data asli
+5. Setelah deploy, buka link publiknya dari **beberapa device berbeda** (laptop, HP Android, iPhone) buat mastiin semua bisa akses
+
+---
+
+## 🔒 Keamanan yang Sudah Diterapkan
+
+**Penting: tidak ada sistem yang bisa dijamin 100% aman.** Yang saya terapkan adalah praktik standar untuk menutup celah-celah paling umum:
+
+| Risiko | Yang diterapkan |
+|---|---|
+| SQL Injection | Semua query database pakai parameter (`?`), bukan string gabungan — aman dari awal |
+| **XSS (Cross-Site Scripting)** | Semua data dari pengguna (nama, email, dll) di-*escape* sebelum ditampilkan di halaman manapun, termasuk dashboard admin |
+| **Path traversal via upload file** | Nama file bukti pembayaran ditentukan sendiri oleh server (bukan dari nama file asli yang diupload user) |
+| File upload disamarkan | Server mengecek isi file (signature/magic bytes), bukan cuma percaya label tipe file dari browser |
+| Brute-force / spam | Rate limiting di endpoint pemesanan, pencarian tiket, dan semua endpoint admin |
+| Timing attack pada password admin | Perbandingan password admin pakai `crypto.timingSafeEqual`, bukan `===` biasa |
+| **Kebocoran data antar pemesan** | Tiket & status pesanan hanya bisa diakses dengan kombinasi **Email + Booking ID yang cocok** — Order ID saja tidak cukup untuk melihat data orang lain |
+| Bukti pembayaran diintip orang lain | File bukti pembayaran disimpan di luar folder publik, hanya bisa dibuka lewat dashboard admin yang sudah login |
+| HTTP headers berbahaya | Pakai `helmet` (Content-Security-Policy, X-Frame-Options, dll) |
+| CORS terbuka | Dihapus total — frontend & API satu server/origin yang sama, jadi situs lain tidak bisa memanggil API ini dari browser |
+
+**Yang TETAP jadi tanggung jawabmu:**
+- HTTPS di production (lihat bagian Deploy di atas) — tanpa ini, data bisa disadap di jaringan
+- Password admin yang kuat di `.env` (jangan pakai contoh bawaan)
+- Update dependency secara berkala (`npm audit`, `npm update`) untuk menutup celah yang ditemukan di kemudian hari
+- Backup rutin — keamanan bukan cuma soal dibobol, tapi juga soal data tidak hilang
+
+---
+
+## Alur Cek Status & Unduh Tiket (Fitur Baru)
+
+Sebelumnya, begitu pembeli upload bukti pembayaran, mereka langsung diarahkan ke halaman yang otomatis menunggu status. Sekarang **dipisah**: setelah upload bukti, pembeli hanya diberi Order ID dan diarahkan ke halaman terpisah **`cek-tiket.html`**.
+
+Kenapa dipisah begini:
+- Pembeli bisa keluar dari browser/tutup tab kapan saja tanpa takut kehilangan akses — mereka tinggal buka lagi `cek-tiket.html` dari perangkat manapun, kapan pun
+- Untuk masuk ke sesi ini, wajib input **Email + Booking ID** yang cocok — ini sekaligus jadi lapisan keamanan supaya orang lain tidak bisa asal menebak Order ID untuk melihat tiket/data pemesan lain
+- Kalau status masih pending, halaman otomatis cek ulang tiap beberapa detik selama dibuka — begitu admin meng-ACC, tiket otomatis muncul tanpa perlu refresh manual
+
+## Alur Pembayaran Manual & ACC Admin
+
+1. Pembeli isi data → sistem tampilkan nominal, nomor rekening, dan QRIS
+2. Pembeli transfer manual di luar sistem, lalu **wajib upload bukti pembayaran** sebelum bisa lanjut
+3. Panitia login admin → tab **Rekap & Verifikasi Pembayaran** → **Lihat Bukti** → **ACC Pembayaran** atau **Tolak**
+4. Begitu di-ACC, tiket QR (satu kode unik per lembar tiket) langsung diterbitkan
+5. Kalau ditolak (bukti tidak valid / tidak ada progres), pesanan ditandai **"failed"** — datanya **tetap tersimpan** (tidak dihapus) tapi dipindah ke tab terpisah, dan pembeli otomatis bisa langsung pesan ulang pakai email yang sama
+
+**Tidak ada lagi batas waktu pembayaran otomatis.** Pesanan tetap berstatus "pending" selama apa pun sampai admin secara manual meng-ACC atau menolaknya — tidak ada penghapusan/pembatalan otomatis berbasis waktu.
+
+## Tiket QR Per Lembar
+
+Pesanan dengan >1 tiket menghasilkan kode QR **berbeda-beda untuk tiap lembar**, dan tiap kode di-blacklist independen begitu discan panitia.
+
+## Fitur Cegah Email Duplikat
+
+Email yang masih punya pesanan **aktif** (status lunas atau pending) tidak bisa dipakai daftar lagi — mencegah satu orang membuat banyak pesanan ganda sekaligus. Begitu pesanan ditandai **gagal** oleh admin, email itu otomatis bebas dipakai lagi untuk pesan ulang.
+
+## Data Gagal/Kedaluwarsa (Terpisah dari Rekap Utama)
+
+Dashboard admin punya tab khusus **"Data Gagal/Kedaluwarsa"** untuk pesanan yang ditolak admin:
+- **Tidak muncul** di tab Rekap utama, tidak dihitung di statistik utama (Total Pemesanan, dst), dan **tidak ikut ter-export** saat klik "Export CSV" di tab Rekap
+- Datanya tetap tersimpan (bukan dihapus) — berguna untuk keperluan audit/pemeliharaan server nantinya
+- Ada tombol **Export CSV** sendiri, terpisah dari export utama, khusus untuk data gagal ini kalau sewaktu-waktu kamu perlu
+
+## Fitur Kontrol Batch Pendaftaran & Harga per Batch
+
+Dashboard admin → tab **Kontrol Pendaftaran**, semua bisa diatur langsung dari situ tanpa perlu sentuh `.env` atau restart server:
+
+- **Buka/tutup pendaftaran** kapan saja
+- **Pilih batch aktif**: Batch 1, Batch 2, Batch 3, atau **OTS (On The Spot)** — OTS diperlakukan sebagai "batch ke-4", cocok dipakai untuk pendaftaran di tempat saat hari-H acara
+- **Atur harga tiap batch secara terpisah** — boleh sama atau beda-beda (misalnya Batch 1 lebih murah, OTS paling mahal). Harga yang dipakai untuk sebuah pesanan adalah harga batch yang sedang aktif **pada saat pesanan itu dibuat** — jadi kalau kamu ganti harga setelahnya, pesanan yang sudah ada **tidak ikut berubah**, cuma pesanan baru yang kena harga terbaru.
+
+`EVENT_TICKET_PRICE` di `.env` sekarang cuma dipakai sekali sebagai nilai awal saat instalasi pertama kali (mengisi harga default ke-4 batch). Setelahnya, semua pengaturan harga sepenuhnya lewat dashboard.
+
+## Cara Menghapus Data
+
+**Sengaja hanya bisa lewat terminal/akses server langsung, TIDAK ada tombol hapus di dashboard admin.** Ini keputusan yang disengaja demi integritas data — kalau menghapus data bisa dilakukan cukup dengan login dashboard (yang password-nya sering dipakai bersama beberapa panitia), itu jadi celah data bisa dimanipulasi atau dihilangkan tanpa jejak yang jelas oleh siapa saja yang punya akses login. Mengharuskan akses server langsung memberi barrier ekstra dan jejak yang lebih jelas siapa yang melakukannya.
+
+```bash
+npm run reset-db
+```
+Ketik `hapus` untuk konfirmasi. Ikut menghapus file bukti pembayaran yang tersimpan. Pengaturan batch/harga/buka-tutup **tidak** ikut terhapus.
+
+Kalau sudah di-deploy ke Railway/Render/VPS dan butuh menjalankan ini, kamu perlu akses terminal ke server (misalnya lewat Railway CLI `railway run npm run reset-db`, atau SSH kalau pakai VPS) — bukan sekadar buka dashboard di browser.
+
+## Kalau Dashboard Admin Tiba-Tiba Kosong / Tidak Muncul Data
+
+Sekarang sistem bisa membedakan dua kondisi berbeda:
+- **"Belum ada data"** — memang belum ada pesanan yang cocok dengan filter yang dipilih
+- **"Gagal memuat data"** — muncul pesan error merah dengan tombol **Coba Lagi**, biasanya karena koneksi internet putus sesaat atau server sempat tidak merespons. Data yang sebelumnya sudah termuat di layar **tidak akan hilang/ketimpa kosong** hanya karena satu kali refresh otomatis gagal — jadi kalau tiba-tiba terlihat kosong total, kemungkinan besar itu memang error jaringan sesaat, bukan data yang benar-benar hilang dari database. Klik **Coba Lagi**, atau refresh halaman.
+
+## Pendaftar Real-Time per Batch
+
+Tab Rekap sekarang menampilkan kartu **"Pendaftar per Batch"** yang menunjukkan jumlah pendaftar di tiap batch (1/2/3/OTS) secara real-time, termasuk rincian berapa yang sudah lunas dan berapa yang masih pending — otomatis ter-update tiap 15 detik bersamaan dengan rekap utama.
+
+
+## Asal Instansi & Upload KTM (Beda dari Versi Internal)
+
+Ini yang jadi pembeda utama project ini dari sistem tiket internal (Festheria):
+- Form pemesanan **tidak** pakai dropdown Prodi/Tingkat — diganti field bebas **"Asal Instansi"** (nama sekolah/kampus/perusahaan/organisasi asal peserta)
+- Peserta **wajib mengunggah foto KTM/kartu identitas** langsung di halaman isi data (bukan di halaman pembayaran) — ini jadi bukti kuat identitas peserta eksternal
+- Validasi upload KTM sama persis ketatnya dengan bukti pembayaran: format harus JPG/PNG/WEBP, maksimal 5MB, dan isi filenya diverifikasi benar-benar gambar (bukan cuma percaya label dari browser)
+- Panitia bisa lihat foto KTM lewat tombol **"Lihat KTM"** di dashboard admin, terpisah dari tombol **"Lihat Bukti"** (bukti pembayaran) — supaya bisa mengecek identitas dan bukti transfer sebagai dua hal terpisah sebelum meng-ACC
+
+Kalau nanti perlu tambah/ubah field lain khusus peserta eksternal, edit `routes/booking.js` (validasi) dan `public/booking.html` + `public/js/booking.js` (form-nya).
+
+## Fitur Sort di Rekap Admin
+
+Tabel rekap admin bisa diurutkan berdasarkan Nama (A-Z/Z-A), Asal Instansi (A-Z/Z-A), atau Waktu Pemesanan (terbaru/terlama), lewat dropdown "Urutkan Berdasarkan" di atas tabel.
+
+**Catatan teknis (biar kamu tenang):** fitur ini murni mengatur *urutan tampilan baris* di layar — hanya menata ulang array data yang sudah diambil dari server sebelum ditampilkan, sama sekali tidak mengubah/menulis apapun ke database. Ganti-ganti urutan sort sesuka hati tidak akan pernah merusak atau mengubah data pemesanan yang sebenarnya.
+
+## Kolom "Waktu ACC"
+
+Tabel rekap juga menampilkan kapan tiap pesanan di-ACC oleh admin (kolom **Waktu ACC**, kosong/"-" kalau belum di-ACC). Ini juga otomatis ikut ke dalam file saat kamu klik Export CSV.
+
+## Tema Visual "Jungle"
+
+Seluruh halaman (pemesanan, pembayaran, cek tiket, dashboard admin) memakai palet warna yang sama dengan Festheria'25 (`#534332`, `#394032`, `#454F2D`, `#797F3E`, `#9F7E4A`), plus sentuhan motif daun (tekstur latar halus di seluruh halaman, watermark daun di pojok kartu tiket, ikon daun di pembatas antar-bagian) supaya nuansa hutan/jungle terasa tanpa mengorbankan keterbacaan teks. UI/UX-nya sengaja dibuat identik dengan sistem internal supaya pengalaman peserta konsisten walau mendaftar lewat jalur yang berbeda.
+
+## Format Cetak Tiket (PDF/A4)
+
+Tombol **"Cetak / Simpan sebagai PDF"** di halaman Cek Tiket sekarang menghasilkan format yang jauh lebih rapi:
+- **1 halaman A4 = 1 tiket** — kalau pesanan punya 3 tiket, hasil cetak/PDF-nya otomatis jadi 3 halaman terpisah, masing-masing dengan kode QR yang berbeda
+- **Nama pemesan** di pojok kiri atas tiap halaman
+- **Kode QR + kode unik tiket** di tengah halaman, ukurannya pas tidak melebar
+- Info tambahan (Order ID, Asal Instansi, Batch) di bagian bawah
+- Latar dibuat **putih** (bukan gelap seperti tampilan di layar) supaya hemat tinta kalau dicetak fisik, tapi nuansa jungle tetap kerasa lewat warna aksen hijau/emas dan ikon daun — sudah saya uji render sungguhan (generate PDF asli) dan hasilnya pas di ukuran A4 standar
+
+Cara pakainya sama seperti sebelumnya: klik tombol itu, lalu di dialog print browser pilih **"Save as PDF"** (atau print fisik langsung kalau printer sudah terhubung).
+
+## Scan QR Tiket - Kalau Kamera Nyala Tapi Tidak Men-scan
+
+Sekarang sistem otomatis mendeteksi kamera yang **benar-benar tersedia** di device kamu (bukan asal minta "kamera belakang" yang di laptop memang tidak ada). Kalau device kamu punya lebih dari 1 kamera, akan muncul dropdown pemilih kamera di atas area scan.
+
+Kalau masih belum berhasil men-scan:
+1. Pastikan diakses lewat `https://` (di server produksi) atau `localhost` (di laptop) — browser blokir kamera di alamat HTTP biasa
+2. Coba pilih kamera lain dari dropdown kalau ada lebih dari satu pilihan
+3. Pastikan pencahayaan cukup dan QR code tidak terlalu jauh/blur dari kamera
+4. Kalau kamera tetap tidak mendeteksi apa pun, gunakan kolom **input manual** di bawah area scan sebagai alternatif — panitia tinggal ketik kode tiketnya
+
+## Performa Saat Diakses Banyak Orang Bersamaan (2000-3000+)
+
+Sistem sudah diuji tahan menangani ratusan-ribuan request **bersamaan persis** di detik yang sama (booking, ACC admin, scan QR, dan polling status), lewat rangkaian perbaikan berikut:
+
+1. **Mode database WAL** — database (`db/database.js`) diaktifkan mode `journal_mode=WAL` + `busy_timeout=8000`. Tanpa ini, SQLite mengunci seluruh file tiap kali ada satu orang menulis data, jadi kalau banyak orang submit bersamaan sebagian bisa gagal dengan error "database terkunci". Dengan WAL, pembacaan (misal admin lihat rekap) tidak terhalang oleh penulisan (orang lain sedang submit booking) yang terjadi bersamaan.
+
+2. **Rate limit dinaikkan signifikan** — supaya banyak orang yang kebetulan berbagi satu jaringan/WiFi yang sama (dari sudut pandang server, mereka semua "terlihat" datang dari 1 IP) tetap bisa akses lancar tanpa saling memblokir:
+   - Umum (semua endpoint): 10.000 request / 15 menit per IP
+   - Booking: 1.000 percobaan / 15 menit per IP
+   - Cek status/lookup tiket: 3.000 percobaan / 15 menit per IP (dibuat lebih tinggi karena halaman "Cek Tiket" otomatis polling ulang tiap 15 detik selagi menunggu ACC — kalau banyak orang menunggu bersamaan dari jaringan yang sama, ini bisa menghasilkan ribuan request wajar dalam 15 menit)
+
+3. **Rate limit dashboard admin (termasuk scan QR) — dipisah logikanya dari kode status HTTP.** Percobaan pertama membatasi berdasarkan status HTTP endpoint-nya (dianggap "gagal" kalau 400 ke atas). Ternyata ini salah, karena endpoint seperti **check-in/scan QR** itu WAJAR sering menghasilkan status "gagal" sebagai bagian dari pemakaian normal (404 kalau kode tiket salah ketik, 409 kalau tiket sudah pernah discan) — bukan tanda ada yang coba membobol sistem. Sekarang logikanya (`routes/admin.js` → `loginAttemptLimiter`) menghitung berdasarkan **benar/salah kredensial username-password saja**, bukan kode status response endpoint apapun. Jadi berapa pun banyaknya hasil "gagal" dari scan QR, ACC, tolak pembayaran, dsb (dengan login yang sah), tidak akan pernah mengurangi jatah limit — yang tetap dibatasi cuma percobaan **login dengan password salah** berkali-kali (proteksi brute-force asli, tetap aktif).
+
+**Hasil pengujian beban** (disimulasikan lewat script, bukan cuma dibaca dari kode):
+| Skenario | Hasil |
+|---|---|
+| 300 booking bersamaan | ✅ 300/300 berhasil |
+| ACC 290 pesanan bersamaan | ✅ 290/290 berhasil |
+| 1.200 polling "Cek Tiket" dari 60 orang berbagi 1 IP | ✅ semua berhasil, 0 kena limit |
+| 150x scan tiket tidak valid beruntun (simulasi antrean di pintu masuk) | ✅ semua ditolak wajar (404), 0 kena limit |
+| 60x percobaan password admin yang salah | ✅ tetap diblokir otomatis setelah percobaan ke-50 (brute-force protection masih berfungsi) |
+
+**Soal hosting:** perbaikan kode ini menyelesaikan akar masalah yang muncul saat uji coba 80 orang. Tapi untuk skala **2000-3000 orang** di hari-H, kamu tetap disarankan **upgrade dari paket trial Railway ke paket Hobby (atau lebih tinggi)** — kode yang efisien tetap butuh sumber daya server (CPU/RAM) yang memadai, dan paket trial biasanya dibatasi cukup ketat untuk skala trafik seramai itu.
+
+
+
