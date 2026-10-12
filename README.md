@@ -258,3 +258,13 @@ Sistem sudah diuji tahan menangani ratusan-ribuan request **bersamaan persis** d
 
 
 
+
+## Pemesan yang kembali sebelum kirim bukti
+- Email sudah terdaftar, status `pending`, belum ada bukti, dan **No HP sama** → dilanjutkan ke halaman pembayaran pesanan yang sama.
+- No HP beda → ditolak. Bukti sudah dikirim / lunas → diarahkan ke "Cek Tiket".
+- Di "Cek Tiket", pesanan pending tanpa bukti punya tombol "Upload Bukti Pembayaran".
+
+## Cek Tiket pakai Email + Nomor HP
+- Pembeli cukup memasukkan Email + Nomor HP saat mendaftar (Booking ID sekarang opsional).
+- Format nomor disamakan (`0812…` = `+62812…`). Pesan error generik.
+- Pembatas: 10 percobaan GAGAL per email per 15 menit (percobaan benar tidak dihitung).

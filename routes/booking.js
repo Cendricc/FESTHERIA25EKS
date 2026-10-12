@@ -62,15 +62,36 @@ router.post('/', (req, res) => {
       const emailNormalized = email.trim().toLowerCase();
 
       const existing = db.prepare(`
-        SELECT id FROM bookings
+        SELECT id, no_hp, status_pembayaran, bukti_pembayaran FROM bookings
         WHERE LOWER(email) = ? AND status_pembayaran IN ('paid', 'pending')
+        ORDER BY created_at DESC LIMIT 1
       `).get(emailNormalized);
 
       if (existing) {
-        cleanupUploadedFile();
+        cleanupUploadedFile(); // KTM yang baru diunggah tidak dipakai; pesanan lama tetap dengan KTM-nya
+        const eventName = process.env.EVENT_NAME || 'event ini';
+        const normPhone = (v) => String(v || '').replace(/\D/g, '').replace(/^62/, '0');
+        const phoneMatch = normPhone(existing.no_hp) === normPhone(no_hp);
+        const belumKirimBukti = existing.status_pembayaran === 'pending' && !existing.bukti_pembayaran;
+
+        // Pemesan yang kembali sebelum kirim bukti dilanjutkan ke pesanan yang sama (wajib No HP cocok).
+        if (belumKirimBukti && phoneMatch) {
+          return res.json({
+            success: true,
+            resumed: true,
+            order_id: existing.id,
+            message: 'Kamu sudah punya pesanan yang belum dibayar. Kami lanjutkan ke halaman pembayaran pesananmu sebelumnya.'
+          });
+        }
+        if (belumKirimBukti) {
+          return res.status(409).json({
+            success: false,
+            errors: [`Email sudah terdaftar sebagai peserta ${eventName}. Untuk melanjutkan pesanan yang belum dibayar, isi dengan Nomor HP yang sama seperti saat pendaftaran pertama, atau buka halaman "Cek Tiket".`]
+          });
+        }
         return res.status(409).json({
           success: false,
-          errors: [`Email sudah terdaftar sebagai peserta ${process.env.EVENT_NAME || 'event ini'}.`]
+          errors: [`Email sudah terdaftar sebagai peserta ${eventName}. Bukti pembayaran sudah diterima / pesanan sudah lunas - cek status dan tiketmu di halaman "Cek Tiket".`]
         });
       }
 
